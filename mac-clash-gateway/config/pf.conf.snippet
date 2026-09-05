@@ -1,0 +1,6 @@
+# Insert this attachment point immediately before Apple's filter anchor:
+anchor "clash-forward"
+
+# Existing Apple lines remain unchanged:
+anchor "com.apple/*"
+load anchor "com.apple" from "/etc/pf.anchors/com.apple"
