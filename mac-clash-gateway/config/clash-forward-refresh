@@ -1,0 +1,153 @@
+#!/bin/sh
+
+set -u
+
+PFCTL=/sbin/pfctl
+IFCONFIG=/sbin/ifconfig
+AWK=/usr/bin/awk
+GREP=/usr/bin/grep
+PGREP=/usr/bin/pgrep
+MKDIR=/bin/mkdir
+RMDIR=/bin/rmdir
+
+ANCHOR="clash-forward"
+RULES="/etc/pf.anchors/clash-forward"
+
+HOTSPOT_IF="bridge100"
+HOTSPOT_IP="192.168.2.1"
+HOTSPOT_NET="192.168.2.0/24"
+
+TUN_IP="198.18.0.1"
+
+LOCKDIR="/var/run/clash-forward-refresh.lock"
+
+say()
+{
+    printf '%s\n' "$*"
+}
+
+cleanup()
+{
+    "$RMDIR" "$LOCKDIR" >/dev/null 2>&1 || true
+}
+
+disable_forwarding()
+{
+    "$PFCTL" -a "$ANCHOR" -F all >/dev/null 2>&1 || true
+    "$PFCTL" -k "$HOTSPOT_NET" >/dev/null 2>&1 || true
+    say "DISABLED: clash-forward cleared; hotspot states reset; Apple Internet Sharing remains available."
+}
+
+find_tun()
+{
+    "$IFCONFIG" 2>/dev/null | "$AWK" -v target="$TUN_IP" '
+        /^[[:alnum:]_.-]+: flags=/ {
+            iface=$1
+            sub(/:$/, "", iface)
+        }
+        $1 == "inet" && $2 == target {
+            print iface
+        }
+    '
+}
+
+validate()
+{
+    if ! "$PFCTL" -sr 2>/dev/null | "$GREP" -Eq '^[[:space:]]*anchor "clash-forward"([[:space:]]|$)'; then
+        say "ERROR: main PF ruleset does not contain anchor \"$ANCHOR\"."
+        return 10
+    fi
+
+    if ! "$IFCONFIG" "$HOTSPOT_IF" 2>/dev/null | "$AWK" -v target="$HOTSPOT_IP" '
+        $1 == "inet" && $2 == target { found=1 }
+        END { exit(found ? 0 : 1) }
+    '; then
+        say "ERROR: $HOTSPOT_IF with $HOTSPOT_IP is not ready."
+        return 11
+    fi
+
+    if ! "$PGREP" -x verge-mihomo >/dev/null 2>&1; then
+        say "ERROR: verge-mihomo is not running."
+        return 12
+    fi
+
+    TUN_LIST="$(find_tun)"
+    TUN_COUNT="$(printf '%s\n' "$TUN_LIST" | "$AWK" 'NF { count++ } END { print count+0 }')"
+
+    if [ "$TUN_COUNT" -ne 1 ]; then
+        say "ERROR: expected exactly one interface with $TUN_IP; found $TUN_COUNT."
+        return 13
+    fi
+
+    TUN_IF="$(printf '%s\n' "$TUN_LIST" | "$AWK" 'NF { print; exit }')"
+
+    if ! printf '%s\n' "$TUN_IF" | "$GREP" -Eq '^utun[0-9]+$'; then
+        say "ERROR: interface for $TUN_IP is not a utun interface: $TUN_IF"
+        return 14
+    fi
+
+    CHECK_OUT="$("$PFCTL" -n -a "$ANCHOR" -D "tun_if=$TUN_IF" -f "$RULES" 2>&1)"
+    CHECK_RC=$?
+
+    if [ "$CHECK_RC" -ne 0 ]; then
+        say "ERROR: PF rules failed validation."
+        printf '%s\n' "$CHECK_OUT"
+        return 15
+    fi
+
+    return 0
+}
+
+if ! "$MKDIR" "$LOCKDIR" 2>/dev/null; then
+    say "ERROR: another clash-forward-refresh instance appears to be running."
+    exit 30
+fi
+
+trap cleanup 0 1 2 15
+
+case "${1:-}" in
+    --check)
+        validate
+        RC=$?
+        if [ "$RC" -ne 0 ]; then
+            say "CHECK FAILED."
+            exit "$RC"
+        fi
+        say "CHECK OK: $HOTSPOT_IF=$HOTSPOT_IP, TUN=$TUN_IF, Mihomo running, PF rules valid."
+        ;;
+    --apply)
+        validate
+        RC=$?
+        if [ "$RC" -ne 0 ]; then
+            say "APPLY PRECHECK FAILED; switching to fail-open mode."
+            disable_forwarding
+            exit "$RC"
+        fi
+        LOAD_OUT="$("$PFCTL" -a "$ANCHOR" -D "tun_if=$TUN_IF" -f "$RULES" 2>&1)"
+        LOAD_RC=$?
+        if [ "$LOAD_RC" -ne 0 ]; then
+            say "ERROR: failed to load clash-forward rules."
+            printf '%s\n' "$LOAD_OUT"
+            disable_forwarding
+            exit 20
+        fi
+        KILL_OUT="$("$PFCTL" -k "$HOTSPOT_NET" 2>&1)"
+        KILL_RC=$?
+        if [ "$KILL_RC" -ne 0 ]; then
+            say "ERROR: failed to reset hotspot PF states."
+            printf '%s\n' "$KILL_OUT"
+            disable_forwarding
+            exit 21
+        fi
+        say "APPLY OK: TUN=$TUN_IF; hotspot states reset."
+        printf '%s\n' "$KILL_OUT"
+        "$PFCTL" -a "$ANCHOR" -s rules -v
+        ;;
+    --disable)
+        disable_forwarding
+        ;;
+    *)
+        say "Usage: $0 --check | --apply | --disable"
+        exit 64
+        ;;
+esac
