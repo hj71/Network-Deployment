@@ -15,10 +15,15 @@ title: Network Deployment 技术知识库
 
 状态：**Production Baseline v1.0 — PASS**
 
+### [用 Tailscale 连接家庭与办公室：双 NAS 网关与 Cloudflare 独立管控平面](dual-site-tailscale-cloudflare-control-plane/)
+
+以 Tailscale 连接办公室与家庭局域网，并记录如何加入独立的 Cloudflare 状态观察、双端诊断和受控恢复流程。文章及附件使用统一的虚构名称和地址。
+
+状态：实践记录已发布；真实故障自动恢复完整链路仍待验收。
+
 ## 使用说明
 
 每个项目都是独立文档单元。进入项目首页后，再按“概述 → 架构 → 部署 → 验证 → 恢复 → 升级”的顺序阅读。
 
 > [!IMPORTANT]
 > 本站只发布脱敏资料。任何涉及个人设备、实际网络参数、访问凭据或完整运行证据的内容均不进入公开仓库。
-
